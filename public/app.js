@@ -24,7 +24,7 @@ const MAX_FETCH_DAYS = 2500;
 
 const i18n = {
   zh: {
-    title: "OceanFishing（刁曼岛）MVP",
+    title: "OceanFishing (Botum King)",
     subtitle: "按鱼种推荐 + 近 30 天游钓鱼榜单",
     firebaseLabel: "Firebase 配置",
     firebaseHint: "把 public/app.js 里的 firebaseConfig 换成你的项目配置",
@@ -83,7 +83,7 @@ const i18n = {
     connected: (p) => `已连接：${p}`
   },
   en: {
-    title: "OceanFishing (Tioman) MVP",
+    title: "OceanFishing (Botum King)",
     subtitle: "Species Scores + Last 30 Days Fishing Board",
     firebaseLabel: "Firebase Config",
     firebaseHint: "Fill firebaseConfig in public/app.js",
@@ -489,12 +489,18 @@ async function fetchDailyStatsFromApi(areaId, limit) {
 }
 
 async function seedFromApi(areaId) {
-  const urlReal = `/api/seed?areaId=${encodeURIComponent(areaId)}&days=365&source=real`;
+  const today = new Date();
+  const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  const startUTC = addDaysUTC(todayUTC, -364);
+  const start = toYyyyMmDdUTC(startUTC);
+  const end = TIDE_END_YYYY_MM_DD;
+
+  const urlReal = `/api/seed?areaId=${encodeURIComponent(areaId)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&source=real`;
   const resReal = await fetch(urlReal, { method: "POST" });
   const jsonReal = await resReal.json().catch(() => ({}));
   if (resReal.ok) return jsonReal;
 
-  const urlMock = `/api/seed?areaId=${encodeURIComponent(areaId)}&days=365`;
+  const urlMock = `/api/seed?areaId=${encodeURIComponent(areaId)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
   const resMock = await fetch(urlMock, { method: "POST" });
   const jsonMock = await resMock.json().catch(() => ({}));
   if (!resMock.ok) {
@@ -637,6 +643,10 @@ async function main() {
       setStatus(`${t("loadFailed")}: ${e.message}`, "danger");
       renderEmpty(t("loadFailed"));
     });
+  });
+
+  areaSelect.addEventListener("change", () => {
+    refresh().catch(() => {});
   });
 
   seedBtn.addEventListener("click", () => {
