@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>OceanFishing MVP</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div id="title" class="title">OceanFishing（刁曼岛）MVP</div>
+      <div id="subtitle" class="subtitle">按鱼种推荐 + 近 30 天游钓鱼榜单</div>
+    </header>
+
+    <main class="main">
+      <section class="card">
+        <div class="row">
+          <div id="labelFirebase" class="label">Firebase 配置</div>
+          <div id="hintFirebase" class="hint">把 public/app.js 里的 firebaseConfig 换成你的项目配置</div>
+        </div>
+        <div id="status" class="status">未连接</div>
+      </section>
+
+      <section class="grid">
+        <section class="card">
+          <div class="row">
+            <div id="labelArea" class="label">区域</div>
+            <select id="areaSelect" class="select">
+              <option value="singapore_4h">Singapore</option>
+              <option value="tioman_4h">Tioman Island (Malaysia)</option>
+              <option value="bali_4h">巴厘岛 (Indonesia)</option>
+              <option value="maldives_4h">马尔代夫 (Maldives)</option>
+            </select>
+          </div>
+          <div class="row">
+            <div id="labelLang" class="label">语言</div>
+            <select id="langSelect" class="select">
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div class="row">
+            <button id="refreshBtn" class="btn">刷新</button>
+            <button id="seedBtn" class="btn btn-secondary">本地填充 365 天</button>
+          </div>
+
+          <div class="row">
+            <div id="labelMode" class="label">作钓模式</div>
+            <label class="toggle">
+              <input id="bottomModeToggle" type="checkbox" checked />
+              <span class="toggle-ui" aria-hidden="true"></span>
+              <span id="toggleText" class="toggle-text">底钓模式（30–100m）</span>
+            </label>
+          </div>
+
+          <div class="row">
+            <div id="labelTide" class="label">潮汐日历</div>
+            <select id="tideRangeSelect" class="select">
+              <option value="30">未来 30 天</option>
+              <option value="90">未来 90 天</option>
+              <option value="180" selected>未来 6 个月</option>
+              <option value="to_2027">到 2027-12-31</option>
+            </select>
+          </div>
+          <div class="row">
+            <div id="labelNote" class="label">说明</div>
+            <div id="hintTide" class="hint">右侧蓝色为潮汐强度，不是鱼分</div>
+          </div>
+          <div id="tideList" class="list"></div>
+
+          <div class="divider"></div>
+          <div class="row">
+            <div id="labelListTitle" class="label">近 30 天游钓鱼榜单</div>
+            <div id="hintListTitle" class="hint">右侧为综合鱼分 / 100</div>
+          </div>
+          <div id="list" class="list"></div>
+        </section>
+
+        <section class="card">
+          <div class="row">
+            <div id="labelDetail" class="label">详情</div>
+            <div id="detailTitle" class="detail-title">请选择一天</div>
+          </div>
+          <pre id="detail" class="pre"></pre>
+        </section>
+      </section>
+    </main>
+
+    <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-firestore-compat.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
