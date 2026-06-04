@@ -1,14 +1,3 @@
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyBOf_vu4akfOp7xDsAK5a6l2yxAd5bKzAo",
-  authDomain: "tiomanfishing-2ecc1.firebaseapp.com",
-  projectId: "tiomanfishing-2ecc1",
-  storageBucket: "tiomanfishing-2ecc1.firebasestorage.app",
-  messagingSenderId: "1037614029894",
-  appId: "1:1037614029894:web:f25ca492dc09ed55dc7e47",
-  measurementId: "G-RSRH751N7J"
-};
-
 const statusEl = document.getElementById("status");
 const listEl = document.getElementById("list");
 const detailEl = document.getElementById("detail");
@@ -24,10 +13,8 @@ const MAX_FETCH_DAYS = 2500;
 
 const i18n = {
   zh: {
-    title: "OceanFishing (Botum King)",
+    title: "OceanFishing (Bottom King)",
     subtitle: "按鱼种推荐 + 近 30 天游钓鱼榜单",
-    firebaseLabel: "Firebase 配置",
-    firebaseHint: "把 public/app.js 里的 firebaseConfig 换成你的项目配置",
     areaLabel: "区域",
     langLabel: "语言",
     refresh: "刷新",
@@ -57,8 +44,6 @@ const i18n = {
     seedFailed: (m) => `填充失败：${m}`,
     startFailed: (m) => `启动失败：${m}`,
     seedOnlyLocal: "仅本地可用",
-    missingFirebase: "未配置 Firebase（请先在 public/app.js 填写 firebaseConfig）",
-    missingFirebaseHint: "配置完成后点击“刷新”加载 Firestore 数据",
     tideStrength: (p) => `潮汐${p}%`,
     spring: "大潮窗口",
     neap: "小潮",
@@ -79,14 +64,12 @@ const i18n = {
     tempC: "温℃",
     grouper: "石斑",
     snapper: "红鲷",
-    localStatus: "本地模式：Node.js API",
+    apiStatus: "自托管服务：Node.js API",
     connected: (p) => `已连接：${p}`
   },
   en: {
-    title: "OceanFishing (Botum King)",
+    title: "OceanFishing (Bottom King)",
     subtitle: "Species Scores + Last 30 Days Fishing Board",
-    firebaseLabel: "Firebase Config",
-    firebaseHint: "Fill firebaseConfig in public/app.js",
     areaLabel: "Area",
     langLabel: "Language",
     refresh: "Refresh",
@@ -116,8 +99,6 @@ const i18n = {
     seedFailed: (m) => `Seed failed: ${m}`,
     startFailed: (m) => `Start failed: ${m}`,
     seedOnlyLocal: "Local only",
-    missingFirebase: "Firebase not configured (fill firebaseConfig in public/app.js)",
-    missingFirebaseHint: "After config, click Refresh to load Firestore data",
     tideStrength: (p) => `Tide ${p}%`,
     spring: "Spring tide window",
     neap: "Neap",
@@ -138,12 +119,14 @@ const i18n = {
     tempC: "Temp ℃",
     grouper: "Grouper",
     snapper: "Snapper",
-    localStatus: "Local Mode: Node.js API",
+    apiStatus: "Self-hosted service: Node.js API",
     connected: (p) => `Connected: ${p}`
   }
 };
 
-let currentLang = localStorage.getItem("lang") || "zh";
+const DEFAULT_LANG = "en";
+let currentLang = localStorage.getItem("lang") || DEFAULT_LANG;
+if (!i18n[currentLang]) currentLang = DEFAULT_LANG;
 function t(key, ...args) {
   const v = i18n[currentLang][key];
   return typeof v === "function" ? v(...args) : v;
@@ -152,10 +135,6 @@ function t(key, ...args) {
 function setStatus(text, tone) {
   statusEl.textContent = text;
   statusEl.style.borderColor = tone === "danger" ? "rgba(255,92,122,0.45)" : "rgba(58,160,255,0.35)";
-}
-
-function hasConfig(config) {
-  return Boolean(config && config.apiKey && config.projectId);
 }
 
 function formatPill(label, value) {
@@ -468,17 +447,6 @@ function pickPastDaysFromToday(allItems, days) {
   return filtered.sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, days);
 }
 
-async function fetchDailyStats(db, areaId, limit) {
-  const snap = await db
-    .collection("dailyStats")
-    .where("areaId", "==", areaId)
-    .orderBy("date", "desc")
-    .limit(limit)
-    .get();
-
-  return snap.docs.map((d) => d.data());
-}
-
 async function fetchDailyStatsFromApi(areaId, limit) {
   const res = await fetch(`/api/daily?areaId=${encodeURIComponent(areaId)}&limit=${encodeURIComponent(limit)}`);
   const json = await res.json().catch(() => ({}));
@@ -515,19 +483,8 @@ async function main() {
   let derivedAll = [];
   let bottomMode = false;
   const derivedByDate = new Map();
-  if (isLocal) {
-    setStatus(t("localStatus"), "ok");
-  } else {
-    if (!hasConfig(firebaseConfig)) {
-      setStatus(t("missingFirebase"), "danger");
-      renderEmpty(t("missingFirebaseHint"));
-      return;
-    }
-    firebase.initializeApp(firebaseConfig);
-    setStatus(t("connected", firebaseConfig.projectId), "ok");
-  }
-
-  const db = !isLocal ? firebase.firestore() : null;
+  let statusSuffix = "";
+  setStatus(t("apiStatus"), "ok");
   if (!isLocal) {
     seedBtn.disabled = true;
     seedBtn.textContent = t("seedOnlyLocal");
@@ -542,8 +499,8 @@ async function main() {
       bottomMode = Boolean(bottomModeToggle.checked);
       derivedAll = derive(cachedAll);
       renderList(pickRecent(derivedAll, 30));
-      const head = isLocal ? t("localStatus") : t("connected", firebaseConfig.projectId);
-      setStatus(`${head} / ${bottomMode ? t("modeBottom") : t("modeDefault")}`, "ok");
+      statusSuffix = ` / ${bottomMode ? t("modeBottom") : t("modeDefault")}`;
+      setStatus(`${t("apiStatus")}${statusSuffix}`, "ok");
     });
   }
 
@@ -552,7 +509,7 @@ async function main() {
     const days = v === "to_2027" ? null : Number(v);
     renderTideCalendar(1, derivedByDate);
     tideRangeSelect.addEventListener("change", () => {
-      renderTideCalendar(1, derivedByDate);
+      refresh().catch(() => {});
     });
   } else {
     renderTideCalendar(1, derivedByDate);
@@ -565,8 +522,6 @@ async function main() {
     };
     byId("title", t("title"));
     byId("subtitle", t("subtitle"));
-    byId("labelFirebase", t("firebaseLabel"));
-    byId("hintFirebase", t("firebaseHint"));
     byId("labelArea", t("areaLabel"));
     byId("labelLang", t("langLabel"));
     byId("refreshBtn", t("refresh"));
@@ -597,9 +552,10 @@ async function main() {
   if (langSelect) {
     langSelect.value = currentLang;
     langSelect.addEventListener("change", () => {
-      currentLang = langSelect.value || "zh";
+      currentLang = langSelect.value || DEFAULT_LANG;
       localStorage.setItem("lang", currentLang);
       applyI18nStaticTexts();
+      setStatus(`${t("apiStatus")}${statusSuffix}`, "ok");
       refresh().catch(() => {});
     });
   }
@@ -610,9 +566,7 @@ async function main() {
     detailEl.textContent = "";
     renderEmpty(t("loading"));
     const areaId = areaSelect.value;
-    cachedAll = isLocal
-      ? await fetchDailyStatsFromApi(areaId, MAX_FETCH_DAYS)
-      : await fetchDailyStats(db, areaId, MAX_FETCH_DAYS);
+    cachedAll = await fetchDailyStatsFromApi(areaId, MAX_FETCH_DAYS);
     derivedAll = derive(cachedAll);
     derivedByDate.clear();
     for (const d of derivedAll) {

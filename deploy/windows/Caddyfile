@@ -1,0 +1,7 @@
+fish.britesky.net {
+	encode gzip
+	reverse_proxy 127.0.0.1:5173 {
+		health_uri /api/health
+		health_interval 30s
+	}
+}

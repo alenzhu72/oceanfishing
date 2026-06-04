@@ -5,11 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "lint": "node -c index.js",
-    "sync": "node sync-firestore.js"
+    "lint": "node -c index.js"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "firebase-admin": "^12.7.0"
+    "express": "^4.21.2"
   }
 }

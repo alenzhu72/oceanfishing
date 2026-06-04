@@ -1,5 +1,6 @@
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const express = require("express");
 
 function pad2(n) {
@@ -48,6 +49,10 @@ function addYearsUTC(date, years) {
 
 function clamp01(x) {
   return Math.max(0, Math.min(1, x));
+}
+
+function kmhToKnots(kmh) {
+  return kmh * 0.539957;
 }
 
 function moonPhaseFraction(dateUTC) {
@@ -159,8 +164,10 @@ function aggregateOpenMeteoHourly(hourly) {
   for (const [date, b] of byDate.entries()) {
     const waveMax = b.wave.length ? Math.max(...b.wave) : null;
     const sstMean = b.sst.length ? b.sst.reduce((a, x) => a + x, 0) / b.sst.length : null;
-    const curMean = b.curV.length ? b.curV.reduce((a, x) => a + x, 0) / b.curV.length : null;
-    const curMax = b.curV.length ? Math.max(...b.curV) : null;
+    const curMeanKmh = b.curV.length ? b.curV.reduce((a, x) => a + x, 0) / b.curV.length : null;
+    const curMaxKmh = b.curV.length ? Math.max(...b.curV) : null;
+    const curMean = curMeanKmh !== null ? kmhToKnots(curMeanKmh) : null;
+    const curMax = curMaxKmh !== null ? kmhToKnots(curMaxKmh) : null;
     const curDir = b.curD.length ? circularMeanDeg(b.curD) : null;
     const tideRange =
       b.seaLevel.length ? Math.max(...b.seaLevel) - Math.min(...b.seaLevel) : null;
@@ -183,6 +190,30 @@ function aggregateOpenMeteoHourly(hourly) {
     });
   }
 
+  return out;
+}
+
+function aggregateOpenMeteoDailyWeather(daily) {
+  const times = Array.isArray(daily?.time) ? daily.time : [];
+  const wind = Array.isArray(daily?.wind_speed_10m_max) ? daily.wind_speed_10m_max : [];
+  const windDir = Array.isArray(daily?.wind_direction_10m_dominant)
+    ? daily.wind_direction_10m_dominant
+    : [];
+
+  const out = new Map();
+  for (let i = 0; i < times.length; i++) {
+    const date = String(times[i] || "");
+    if (!isYyyyMmDd(date)) continue;
+
+    const windKts = Number(wind[i]);
+    const windDirDeg = Number(windDir[i]);
+    out.set(date, {
+      meteo: {
+        windKts: Number.isFinite(windKts) ? Math.round(windKts) : null,
+        windDirDeg: Number.isFinite(windDirDeg) ? Math.round(windDirDeg) : null
+      }
+    });
+  }
   return out;
 }
 
@@ -215,6 +246,30 @@ async function fetchOpenMeteoDailyMap({ lat, lon, startDate, endDate }) {
     throw new Error(String(json?.reason || "open_meteo_error"));
   }
   return aggregateOpenMeteoHourly(json.hourly || {});
+}
+
+async function fetchOpenMeteoWeatherDailyMap({ lat, lon, startDate, endDate, archive }) {
+  const url = new URL(
+    archive ? "https://archive-api.open-meteo.com/v1/archive" : "https://api.open-meteo.com/v1/forecast"
+  );
+  url.searchParams.set("latitude", String(lat));
+  url.searchParams.set("longitude", String(lon));
+  url.searchParams.set("daily", ["wind_speed_10m_max", "wind_direction_10m_dominant"].join(","));
+  url.searchParams.set("wind_speed_unit", "kn");
+  url.searchParams.set("timezone", "Asia/Kuala_Lumpur");
+  url.searchParams.set("cell_selection", "sea");
+  url.searchParams.set("start_date", startDate);
+  url.searchParams.set("end_date", endDate);
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`open_meteo_weather_http_${res.status}`);
+  }
+  const json = await res.json();
+  if (json?.error) {
+    throw new Error(String(json?.reason || "open_meteo_weather_error"));
+  }
+  return aggregateOpenMeteoDailyWeather(json.daily || {});
 }
 
 function* dateRangeChunks(startUTC, endUTC, maxDaysPerChunk) {
@@ -319,6 +374,56 @@ const publicDir = path.join(projectRoot, "public");
 const dataDir = path.join(projectRoot, "server", "data");
 const dailyStatsPath = path.join(dataDir, "dailyStats.json");
 
+function isLoopback(address) {
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+async function fetchMapsInto(target, fetcher, args, chunks) {
+  const errors = [];
+  for (const ch of chunks) {
+    try {
+      const m = await fetcher({ ...args, startDate: ch.start, endDate: ch.end });
+      for (const [date, v] of m.entries()) target.set(date, v);
+    } catch (e) {
+      errors.push(`${ch.start}_${ch.end}:${e.message || String(e)}`);
+    }
+  }
+  return errors;
+}
+
+function mergeDailyMetrics(primary, fallback, dateUTC) {
+  return {
+    tide: {
+      rangeM: primary?.tide?.rangeM ?? fallback?.tide?.rangeM ?? estimateTideRangeM(dateUTC)
+    },
+    current: {
+      meanKnots: primary?.current?.meanKnots ?? fallback?.current?.meanKnots ?? null,
+      maxKnots: primary?.current?.maxKnots ?? fallback?.current?.maxKnots ?? null,
+      dominantDirDeg: primary?.current?.dominantDirDeg ?? fallback?.current?.dominantDirDeg ?? null
+    },
+    meteo: {
+      windKts: primary?.meteo?.windKts ?? fallback?.meteo?.windKts ?? null,
+      windDirDeg: primary?.meteo?.windDirDeg ?? fallback?.meteo?.windDirDeg ?? null,
+      waveM: primary?.meteo?.waveM ?? fallback?.meteo?.waveM ?? null
+    },
+    ocean: {
+      surfaceTempC: primary?.ocean?.surfaceTempC ?? fallback?.ocean?.surfaceTempC ?? null
+    }
+  };
+}
+
+function matchesSecret(actual, expected) {
+  const actualBuffer = Buffer.from(String(actual || ""));
+  const expectedBuffer = Buffer.from(String(expected || ""));
+  return actualBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function canSeed(req) {
+  const seedKey = process.env.SEED_KEY;
+  if (seedKey) return matchesSecret(req.get("x-seed-key"), seedKey);
+  return process.env.NODE_ENV !== "production" && isLoopback(req.socket.remoteAddress);
+}
+
 function loadStore() {
   try {
     const raw = fs.readFileSync(dailyStatsPath, "utf8");
@@ -380,6 +485,11 @@ function getDefaultArea(areaId) {
 }
 
 app.post("/api/seed", async (req, res) => {
+  if (!canSeed(req)) {
+    res.status(process.env.SEED_KEY ? 401 : 503).json({ error: process.env.SEED_KEY ? "unauthorized" : "seed_disabled" });
+    return;
+  }
+
   const areaId = String(req.query.areaId || "tioman_4h");
   const startStr = req.query.start ? String(req.query.start) : null;
   const endStr = req.query.end ? String(req.query.end) : null;
@@ -417,26 +527,35 @@ app.post("/api/seed", async (req, res) => {
 
     const center = store.areas[areaId]?.center || defaults.center;
     const todayUTC = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const maxForecastUTC = addDaysUTC(todayUTC, 16);
+    const maxForecastUTC = addDaysUTC(todayUTC, 15);
     const minRealtimeUTC = parseYyyyMmDdUTC("2022-01-01");
 
-    const openMeteoMaps = [];
+    const openMeteoByDate = new Map();
+    const openMeteoWeatherByDate = new Map();
+    const dataErrors = [];
     if (source === "real") {
       const realStart = startUTC.getTime() < minRealtimeUTC.getTime() ? minRealtimeUTC : startUTC;
       const realEnd = finalEndUTC.getTime() > maxForecastUTC.getTime() ? maxForecastUTC : finalEndUTC;
       if (realStart.getTime() <= realEnd.getTime()) {
-        for (const ch of dateRangeChunks(realStart, realEnd, 31)) {
-          openMeteoMaps.push(
-            await fetchOpenMeteoDailyMap({ lat: center.lat, lon: center.lon, startDate: ch.start, endDate: ch.end })
-          );
-        }
+        const chunks = [...dateRangeChunks(realStart, realEnd, 14)];
+        dataErrors.push(
+          ...(await fetchMapsInto(openMeteoByDate, fetchOpenMeteoDailyMap, { lat: center.lat, lon: center.lon }, chunks))
+        );
+        dataErrors.push(
+          ...(await fetchMapsInto(
+            openMeteoWeatherByDate,
+            fetchOpenMeteoWeatherDailyMap,
+            { lat: center.lat, lon: center.lon, archive: false },
+            chunks
+          ))
+        );
       }
 
-      const futureStartUTC = startUTC.getTime() > maxForecastUTC.getTime() ? startUTC : addDaysUTC(maxForecastUTC, 1);
-      if (futureStartUTC.getTime() <= finalEndUTC.getTime()) {
+      const needsReferenceStartUTC = startUTC.getTime() > minRealtimeUTC.getTime() ? startUTC : minRealtimeUTC;
+      if (needsReferenceStartUTC.getTime() <= finalEndUTC.getTime()) {
         let minRef = null;
         let maxRef = null;
-        const cursor = new Date(futureStartUTC);
+        const cursor = new Date(needsReferenceStartUTC);
         while (cursor.getTime() <= finalEndUTC.getTime()) {
           const ref = findClimatologyRefDateUTC(cursor, maxForecastUTC, minRealtimeUTC);
           if (ref) {
@@ -447,18 +566,20 @@ app.post("/api/seed", async (req, res) => {
         }
 
         if (minRef && maxRef && minRef.getTime() <= maxRef.getTime()) {
-          for (const ch of dateRangeChunks(minRef, maxRef, 31)) {
-            openMeteoMaps.push(
-              await fetchOpenMeteoDailyMap({ lat: center.lat, lon: center.lon, startDate: ch.start, endDate: ch.end })
-            );
-          }
+          const refChunks = [...dateRangeChunks(minRef, maxRef, 31)];
+          dataErrors.push(
+            ...(await fetchMapsInto(openMeteoByDate, fetchOpenMeteoDailyMap, { lat: center.lat, lon: center.lon }, refChunks))
+          );
+          dataErrors.push(
+            ...(await fetchMapsInto(
+              openMeteoWeatherByDate,
+              fetchOpenMeteoWeatherDailyMap,
+              { lat: center.lat, lon: center.lon, archive: true },
+              refChunks
+            ))
+          );
         }
       }
-    }
-
-    const openMeteoByDate = new Map();
-    for (const m of openMeteoMaps) {
-      for (const [date, v] of m.entries()) openMeteoByDate.set(date, v);
     }
 
     const cursor = new Date(startUTC);
@@ -470,33 +591,32 @@ app.post("/api/seed", async (req, res) => {
       let yearsBack = null;
 
       if (source === "real") {
-        let fromApi = openMeteoByDate.get(date) || null;
-        if (!fromApi && cursor.getTime() > maxForecastUTC.getTime()) {
-          const ref = findClimatologyRefDateUTC(cursor, maxForecastUTC, minRealtimeUTC);
-          if (ref) {
-            refDate = toYyyyMmDdUTC(ref.refDateUTC);
-            yearsBack = ref.yearsBack;
-            fromApi = openMeteoByDate.get(refDate) || null;
-          }
+        const direct = mergeDailyMetrics(openMeteoByDate.get(date), openMeteoWeatherByDate.get(date), cursor);
+        let fallback = null;
+        const ref = findClimatologyRefDateUTC(cursor, maxForecastUTC, minRealtimeUTC);
+        if (ref) {
+          refDate = toYyyyMmDdUTC(ref.refDateUTC);
+          yearsBack = ref.yearsBack;
+          fallback = mergeDailyMetrics(
+            openMeteoByDate.get(refDate),
+            openMeteoWeatherByDate.get(refDate),
+            ref.refDateUTC
+          );
         }
 
-        if (fromApi) {
-          metrics = {
-            tide: {
-              rangeM: fromApi.tide.rangeM !== null ? fromApi.tide.rangeM : estimateTideRangeM(cursor)
-            },
-            current: fromApi.current,
-            meteo: fromApi.meteo,
-            ocean: fromApi.ocean
-          };
-          kind = refDate ? "open_meteo_climatology" : "open_meteo";
+        metrics = mergeDailyMetrics(direct, fallback, cursor);
+        const hasDirectData =
+          openMeteoByDate.has(date) || openMeteoWeatherByDate.has(date);
+        const hasFallbackData =
+          Boolean(refDate) && (openMeteoByDate.has(refDate) || openMeteoWeatherByDate.has(refDate));
+
+        if (hasDirectData && cursor.getTime() <= maxForecastUTC.getTime()) {
+          kind = "open_meteo";
+          refDate = null;
+          yearsBack = null;
+        } else if (hasFallbackData) {
+          kind = "open_meteo_climatology";
         } else {
-          metrics = {
-            tide: { rangeM: estimateTideRangeM(cursor) },
-            current: { meanKnots: null, maxKnots: null, dominantDirDeg: null },
-            meteo: { waveM: null, windKts: null },
-            ocean: { surfaceTempC: null }
-          };
           kind = "tide_only";
         }
       } else {
@@ -512,7 +632,7 @@ app.post("/api/seed", async (req, res) => {
         scoreOverall: scores.overall,
         scoreBySpecies: scores.bySpecies,
         ...metrics,
-        source: { kind, version: 1, refDate, yearsBack },
+        source: { kind, version: 2, refDate, yearsBack, errors: dataErrors.slice(0, 5) },
         updatedAt: new Date().toISOString()
       });
 
@@ -538,6 +658,11 @@ app.post("/api/seed", async (req, res) => {
     end: toYyyyMmDdUTC(finalEndUTC),
     days: produced
   });
+});
+
+app.get("/api/health", (req, res) => {
+  const store = loadStore();
+  res.json({ ok: true, dailyStats: store.dailyStats.length });
 });
 
 app.get("/api/daily", (req, res) => {
